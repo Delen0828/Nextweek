@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nextweek — Schedule reshuffler</title>
+  <link rel="stylesheet" href="styles.css">
+  <script defer src="core.js"></script>
+  <script defer src="sample.js"></script>
+  <script defer src="i18n.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="index.html" aria-label="Nextweek home"><span class="brand-icon" aria-hidden="true">↗</span> nextweek<span class="brand-dot">.</span></a>
+    <div class="preferences"><label for="ui-language">Language<select id="ui-language"><option value="en">English</option><option value="zh-CN">简体中文</option></select></label><label for="ui-theme">Appearance<select id="ui-theme"><option value="light">Light</option><option value="dark">Dark</option></select></label></div>
+  </header>
+  <main>
+    <nav class="page-nav" aria-label="Schedule steps">
+      <button id="nav-import" class="page-tab" aria-current="step"><span class="step">1</span> Import schedule</button>
+      <span class="nav-arrow" aria-hidden="true">→</span>
+      <button id="nav-schedule" class="page-tab" disabled><span class="step">2</span> Schedule &amp; export</button>
+    </nav>
+    <section id="import-page" aria-labelledby="import-heading">
+      <div class="page-heading"><h1 id="import-heading" tabindex="-1">Import schedule</h1><button id="load-sample" class="text-button">Load sample</button></div>
+      <div class="import-layout">
+        <section class="setup-card import-editor" aria-label="Schedule input">
+          <label for="paste-input">Paste your schedule</label>
+          <textarea id="paste-input" rows="3" spellcheck="false" placeholder="Paste an Outlook table, CSV, or day-by-day text"></textarea>
+          <div class="import-actions"><label class="file-button" for="file-input">Choose file</label><input id="file-input" type="file" accept=".csv,.tsv,.txt,text/csv,text/plain" class="visually-hidden"><span id="file-name" class="helper">CSV or text · up to 2 MB</span></div>
+          <p class="helper">The preview updates as you type or paste.</p>
+          <div id="import-review" class="import-review" hidden><h2>Check dates &amp; times</h2><p class="helper">Missing years use the current year. Review unmarked AM/PM below.</p><div id="import-days" class="input-days"></div></div>
+          <p id="import-error" class="error" role="alert" hidden></p>
+        </section>
+        <section class="setup-card preview-card" aria-labelledby="preview-heading"><div class="section-heading"><h2 id="preview-heading">Input preview</h2><span id="preview-count" class="count-badge">No slots</span></div><div id="import-preview" class="import-preview"><p class="preview-placeholder">Paste a schedule or load the sample to preview it here.</p></div></section>
+      </div>
+      <div class="page-actions"><button id="use-input" class="primary" disabled>Continue to schedule <span aria-hidden="true">→</span></button></div>
+    </section>
+
+    <section id="workspace" hidden>
+      <div class="page-heading"><h1 id="setup-heading" tabindex="-1">Schedule &amp; export</h1><button id="back-input" class="text-button">← Back to input</button></div>
+      <section class="setup-card" aria-labelledby="setup-heading">
+        <div class="section-heading"><span id="input-summary" class="helper"></span><span class="auto-badge">Updates automatically</span></div>
+        <div class="settings-grid"><label>Meeting starting date<input type="date" id="start-date" required></label><label>Split into days<input type="number" id="day-count" min="1" max="365" step="1" required></label><label>Minutes per slot<input type="number" id="duration" min="1" step="1" required></label><button id="reset-schedule" class="secondary" title="Restore automatic order and daily counts. Keep your settings and groups.">Reset schedule <span aria-hidden="true">↻</span></button></div>
+        <div id="daily-starts" class="daily-starts"></div>
+        <div class="settings-footer"><p id="balance-note" class="helper"></p><span class="helper">Reset restores the automatic order, keeping your settings and groups.</span></div>
+        <p id="schedule-error" class="error" role="alert" hidden></p>
+      </section>
+
+      <section class="group-section" aria-labelledby="group-heading"><div class="group-intro"><h2 id="group-heading">Back-to-back groups</h2><p class="helper">Link presenters who need adjacent slots.</p></div><div id="group-list" class="group-list"><span class="helper">No groups yet</span></div><button id="add-group" class="secondary">＋ Add group</button></section>
+
+      <div class="schedule-toolbar"><div class="legend"><span><i class="legend-group"></i> Back-to-back group</span><span><i class="legend-triangle" aria-hidden="true"></i><strong>Bold name</strong> = order changed next week</span></div><span class="helper">Select slots to move them. Groups travel together.</span></div>
+      <div class="schedule-grid">
+        <section class="schedule-panel" aria-labelledby="source-heading"><div class="panel-heading"><div><h2 id="source-heading">This week</h2></div><span id="source-count" class="count-badge"></span></div><div id="source-schedule"></div></section>
+        <section class="schedule-panel output-panel" aria-labelledby="output-heading"><div class="panel-heading"><div><h2 id="output-heading">Next week <span aria-hidden="true">↗</span></h2></div><span id="output-count" class="count-badge"></span></div><div id="output-schedule"></div></section>
+      </div>
+
+      <section class="move-bar" aria-label="Move selected slots"><strong id="selection-count" aria-live="polite">0 slots selected</strong><button id="clear-selection" class="text-button">Clear</button><label>Move to<select id="move-day" aria-label="Destination day"></select></label><label>Position<select id="move-position" aria-label="Destination position"></select></label><button id="move-selected" class="secondary" disabled>Move selected →</button></section>
+      <section class="export-bar"><div><h2>Export schedule</h2></div><div class="export-actions"><button id="copy-text" class="text-button">Copy text</button><button id="download-csv" class="secondary">Download CSV</button><button id="copy-table" class="primary">Copy for Outlook <span aria-hidden="true">↗</span></button></div></section>
+    </section>
+    <p id="status" class="status" role="status" aria-live="polite"></p>
+  </main>
+  <footer>Schedules stay in this browser tab.</footer>
+
+  <dialog id="group-dialog" aria-labelledby="group-dialog-title"><form id="group-form"><div class="dialog-heading"><div><h2 id="group-dialog-title">Create a group</h2></div><button type="button" id="close-group" class="icon-button" aria-label="Close group editor">×</button></div><label>Group name<input id="group-name" maxlength="60" required placeholder="e.g. Research team"></label><label>Find presenters<input id="group-search" type="search" placeholder="Search a name — a typo is okay" autocomplete="off"></label><p class="helper">Select at least two slots. Joint entries stay as one slot.</p><div id="group-results" class="group-results"></div><p id="group-error" class="error" role="alert" hidden></p><div class="dialog-footer"><span id="group-selected-count" class="helper"></span><button type="button" id="delete-group" class="danger" hidden>Delete group</button><button type="submit" class="primary">Save group</button></div></form></dialog>
+
+  <dialog id="copy-dialog" aria-labelledby="copy-heading"><div class="dialog-heading"><div><h2 id="copy-heading">Copy your schedule</h2></div><button id="close-copy" class="icon-button" aria-label="Close copy preview">×</button></div><p id="copy-instructions">Select the table, press ⌘C or Ctrl+C, then paste into Outlook using “Keep Source Formatting”.</p><button id="select-copy" class="secondary">Select table</button><div id="copy-preview" class="copy-preview" tabindex="0"></div></dialog>
+</body>
+</html>
