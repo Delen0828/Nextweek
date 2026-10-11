@@ -1,13 +1,36 @@
-/* UI language and appearance preferences only; no schedule data is persisted. */
+/* UI preferences only; no schedule data is persisted. */
 (() => {
   const zh = {
-    'Language': '语言', 'Appearance': '外观', 'Light': '浅色', 'Dark': '深色',
+    'Language': '语言', 'Appearance': '外观', 'Light': '浅色', 'Dark': '深色', 'Pink': '粉色', 'Light blue': '浅蓝',
+    'Time format': '时间格式', '24-hour': '24 小时', '12-hour': '12 小时',
     'Nextweek home': 'Nextweek 首页', 'Schedule steps': '排期步骤',
+    'Days & times': '日期与时间', 'Last week': '上周',
+    'Choose this week’s days & times': '选择本周的日期与时间',
+    'Choose your meeting days first, then set the times.': '先选择会议日期，再设置时间。',
+    'Choose days': '选择日期', 'First meeting date': '首个会议日期', 'Number of meeting days': '会议天数',
+    'Meeting days can be nonconsecutive. Keep dates in chronological order.': '会议日期可以不连续，请按时间先后排列。',
+    'Set times': '设置时间', 'Continue to last week': '继续导入上周日程',
+    'Paste last week’s schedule': '粘贴上周日程', 'Last week’s schedule': '上周日程', 'Participant order': '参与者顺序',
+    'Only participant order is used. Last week’s dates and times are ignored.': '仅使用参与者顺序，忽略上周的日期和时间。',
+    'Paste a schedule or participant names, one per line': '粘贴日程，或每行输入一位参与者姓名',
+    'Order': '顺序', 'Participant': '参与者',
+    'Paste participant names or a schedule with a participant column.': '请粘贴参与者姓名，或包含参与者列的日程。',
+    'This week’s days & times': '本周日期与时间', 'Edit days & times': '编辑日期与时间',
+    'Generate shifts the last six presenters to the front and distributes slots across your selected days.': '生成时会将最后六个报告时段移到开头，并分配到您选择的日期。',
+    '← Back to days & times': '← 返回日期与时间', 'Generate this week': '生成本周日程',
+    'Fine-tune this week’s schedule': '微调本周日程', '← Back to last week': '← 返回上周日程',
+    '= order changed this week': '= 本周相对顺序有变',
+    'Sample loaded. Review the participant order, then generate this week.': '示例已加载。请核对参与者顺序，然后生成本周日程。',
+    'Check days and times in step 1.': '请在第 1 步核对日期与时间。',
+    'Choose at least one meeting date.': '请至少选择一个会议日期。',
+    'Meeting dates must be different and in chronological order.': '会议日期必须不同，并按时间先后排列。',
+    'Choose a meeting date for every day.': '请为每一天选择会议日期。',
     'Import schedule': '导入日程', 'Schedule & export': '排期与导出', 'Load sample': '加载示例',
     'Schedule input': '日程输入', 'Paste your schedule': '粘贴日程',
     'Paste an Outlook table, CSV, or day-by-day text': '粘贴 Outlook 表格、CSV 或按天排列的文本',
     'Choose file': '选择文件', 'CSV or text · up to 2 MB': 'CSV 或文本文件 · 最大 2 MB',
     'The preview updates as you type or paste.': '输入或粘贴后，预览会自动更新。',
+    'Pastes use plain text; formatting is ignored.': '粘贴时使用纯文本，忽略原格式。',
     'Check dates & times': '核对日期与时间', 'Missing years use the current year. Review unmarked AM/PM below.': '未注明年份时使用当前年份。请在下方确认上午或下午。',
     'Input preview': '输入预览', 'No slots': '暂无时段', 'No valid slots': '暂无有效时段', 'Check input': '请检查输入',
     'Paste a schedule or load the sample to preview it here.': '粘贴日程或加载示例，即可在此预览。',
@@ -17,6 +40,12 @@
     'Reset schedule': '重置日程', 'Restore automatic order and daily counts. Keep your settings and groups.': '恢复自动排列与每天的时段数量，保留当前设置和分组。',
     'Reset restores the automatic order, keeping your settings and groups.': '重置会恢复自动排列，同时保留设置和分组。',
     'Back-to-back groups': '连续时段分组', 'Link presenters who need adjacent slots.': '将需要相邻时段的报告人设为一组。',
+    'Select at least two presenters in this week’s schedule, then add a group.': '在本周日程中选择至少两个报告时段，然后添加分组。',
+    'Select slots to move or group them. Groups travel together.': '选中时段即可移动或分组；同组成员会一起移动。',
+    'Group members': '分组成员', 'Save name': '保存名称',
+    'Group created. You can edit its name.': '分组已创建，可以编辑名称。',
+    'Group name updated.': '分组名称已更新。',
+    'Group was not created. Your previous schedule is unchanged.': '未创建分组，原日程保持不变。',
     'No groups yet': '暂无分组', 'No groups yet — everyone follows the rotation.': '暂无分组，将按轮换顺序排列。', '＋ Add group': '＋ 添加分组',
     'Back-to-back group': '连续时段分组', 'Bold name': '粗体姓名', '= order changed next week': '= 下周相对顺序有变',
     'Select slots to move them. Groups travel together.': '选中时段即可移动；同组成员会一起移动。',
@@ -65,10 +94,16 @@
     'A group contains a slot that is not in the input.': '分组包含输入中不存在的时段。',
     'The destination slot is not on that day.': '目标时段不在所选日期。',
   };
-  let language = 'en', theme = 'light';
-  try { language = localStorage.getItem('nextweek-language') === 'zh-CN' ? 'zh-CN' : 'en'; theme = localStorage.getItem('nextweek-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); } catch (_) {}
-  if (!['light', 'dark'].includes(theme)) theme = 'light';
+  const themes = ['light', 'dark', 'pink', 'blue'];
+  let language = 'en', theme = 'light', timeFormat = '24';
+  try { language = localStorage.getItem('nextweek-language') === 'zh-CN' ? 'zh-CN' : 'en'; theme = localStorage.getItem('nextweek-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); timeFormat = localStorage.getItem('nextweek-time-format') === '12' ? '12' : '24'; } catch (_) {}
+  if (!themes.includes(theme)) theme = 'light';
   const patterns = [
+    [/^(\d+) participants in last week’s order$/, (_, n) => `${n} 位参与者，按上周顺序排列`],
+    [/^Position (\d+)$/, (_, n) => `第 ${n} 位`],
+    [/^Day (\d+) date$/, (_, n) => `第 ${n} 天日期`],
+    [/^Meeting date for day (\d+)$/, (_, n) => `第 ${n} 天会议日期`],
+    [/^(\d+) minutes per slot$/, (_, n) => `每个时段 ${n} 分钟`],
     [/^Day (\d+) · (.*)$/, (_, n, label) => `第 ${n} 天 · ${label}`],
     [/^Day (\d+) starts$/, (_, n) => `第 ${n} 天开始时间`],
     [/^Day (\d+)$/, (_, n) => `第 ${n} 天`],
@@ -86,7 +121,7 @@
     [/^Start time for day (\d+)$/, (_, n) => `第 ${n} 天开始时间`],
     [/^Select (.+), day (\d+), (.+)$/, (_, name, n, time) => `选择 ${name}，第 ${n} 天，${time}`],
     [/^(.+), day (\d+), (.+)$/, (_, name, n, time) => `${name}，第 ${n} 天，${time}`],
-    [/^Imported (\d+) slots\. Next week’s schedule is ready to adjust\.$/, (_, n) => `已导入 ${n} 个时段，可以调整下周日程。`],
+    [/^Imported (\d+) slots\. This week’s schedule is ready to adjust\.$/, (_, n) => `已导入 ${n} 个时段，可以调整本周日程。`],
     [/^Moved (\d+) slots to day (\d+)\. Times have been recalculated\.$/, (_, n, d) => `已将 ${n} 个时段移至第 ${d} 天，时间已重新计算。`],
     [/^Daily slots: (.+) · Matches the daily targets\.$/, (_, counts) => `每天时段数：${counts} · 符合目标数量。`],
     [/^Daily slots: (.+) · Original target: (.+)\. Groups and manual moves take priority\.$/, (_, counts, targets) => `每天时段数：${counts} · 原目标：${targets}。优先保留分组和手动调整。`],
@@ -125,9 +160,11 @@
     for (const { element, attr, source } of staticAttributes) element.setAttribute(attr, t(source));
     document.getElementById('ui-language').value = language;
     document.getElementById('ui-theme').value = theme;
+    document.getElementById('ui-time-format').value = timeFormat;
   }
-  window.I18n = { t, bindStatic, get language() { return language; }, get theme() { return theme; },
+  window.I18n = { t, bindStatic, get language() { return language; }, get theme() { return theme; }, get timeFormat() { return timeFormat; },
     setLanguage(value) { language = value === 'zh-CN' ? 'zh-CN' : 'en'; try { localStorage.setItem('nextweek-language', language); } catch (_) {} apply(); },
-    setTheme(value) { theme = value === 'dark' ? 'dark' : 'light'; try { localStorage.setItem('nextweek-theme', theme); } catch (_) {} apply(); },
+    setTheme(value) { theme = themes.includes(value) ? value : 'light'; try { localStorage.setItem('nextweek-theme', theme); } catch (_) {} apply(); },
+    setTimeFormat(value) { timeFormat = value === '12' ? '12' : '24'; try { localStorage.setItem('nextweek-time-format', timeFormat); } catch (_) {} apply(); },
   };
 })();

@@ -49,7 +49,8 @@
     return (meridiem ? p.h % 12 + (meridiem === 'PM' ? 12 : 0) : p.h) * 60 + p.m;
   }
 
-  function formatTime(minutes) {
+  function formatTime(minutes, format = '24') {
+    if (format !== '12') return minutes === 1440 ? '00:00' : timeInput(minutes);
     if (minutes === 1440) return '12:00 AM';
     const h = Math.floor(minutes / 60);
     return `${h % 12 || 12}:${pad(minutes % 60)} ${h >= 12 ? 'PM' : 'AM'}`;
@@ -98,7 +99,7 @@
     });
   }
 
-  function parseHTML(html, Parser = typeof DOMParser !== 'undefined' ? DOMParser : null) {
+  function htmlMatrices(html, Parser = typeof DOMParser !== 'undefined' ? DOMParser : null) {
     if (!Parser) fail('HTML table parsing requires a browser.');
     // Detached document: never insert clipboard nodes into the live page.
     const doc = new Parser().parseFromString(html, 'text/html');
@@ -126,9 +127,57 @@
           c += spanC;
         }
       });
-      all.push(...tableRecords(matrix.map(row => Array.from(row, v => v || ''))));
+      all.push(matrix.map(row => Array.from(row, v => v || '')));
     }
     return all;
+  }
+
+  const parseHTML = (html, Parser) => htmlMatrices(html, Parser).flatMap(tableRecords);
+
+  const participantHeader = value => /^(?:(?:presenters?|participants?|speakers?)(?:names?)?|names?|报告人|参与者|姓名)$/i.test(value.trim().replace(/[\s_()-]/g, ''));
+  const scheduleMetadata = value => /^(?:day\s*\d+\b.*|\d{4}[-/]\d{1,2}[-/]\d{1,2}.*|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?.*|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d.*|(?:mon|tue|wed|thu|fri|sat|sun)(?:day|sday|nesday|rsday|urday)?(?:\s+.*)?|\d{1,2}:\d{2}.*|\d{1,2}\s*(?:am|pm)|\d+|day|date|start(?:[\s_-]*time)?|end(?:[\s_-]*time)?)$/i.test(value.trim());
+
+  function cleanParticipant(value) {
+    return value.trim().replace(/\s*[•·]\s*Changed\s*$/i, '').trim();
+  }
+
+  function checkParticipants(names) {
+    names = names.map(cleanParticipant).filter(Boolean);
+    if (!names.length) fail('Paste participant names or a schedule with a participant column.');
+    if (names.length > 500) fail('Import up to 500 slots at a time.');
+    return names;
+  }
+
+  function participantsFromMatrix(matrix) {
+    if (!matrix.length) return [];
+    const column = matrix[0].findIndex(participantHeader);
+    return matrix.slice(column >= 0 ? 1 : 0).map(row => {
+      if (column >= 0) return row[column] || '';
+      if (row.length >= 4) return row[3];
+      return row.slice().reverse().find(value => value.trim() && !scheduleMetadata(value)) || '';
+    }).filter(name => !participantHeader(name) && !scheduleMetadata(name));
+  }
+
+  function parseParticipantHTML(html, Parser) {
+    return checkParticipants(htmlMatrices(html, Parser).flatMap(participantsFromMatrix));
+  }
+
+  function parseParticipantText(text) {
+    text = text.replace(/^\uFEFF/, '').trim();
+    const delimiter = text.includes('\t') ? '\t' : ',';
+    let matrix;
+    try { matrix = parseDelimited(text, delimiter); }
+    catch (_) { matrix = text.split(/\r?\n/).map(line => line.split(delimiter).map(cell => cell.trim().replace(/^"|"$/g, ''))); }
+    const table = delimiter === '\t' || matrix[0]?.some(participantHeader) || matrix.some(row => row.length >= 4 || (row.length > 1 && row.some(scheduleMetadata)));
+    if (table) return checkParticipants(participantsFromMatrix(matrix));
+    return checkParticipants(text.split(/\r?\n/).map(line => {
+      line = line.trim();
+      if (!line || participantHeader(line)) return '';
+      line = line.replace(/^(?:[-•*]\s+|\d+[.)]\s+|\[\d+\]\s*)/, '')
+        .replace(/^(?:.*?\s)?\d{1,2}:\d{2}\s*(?:AM|PM)?\s*(?:[–—-]|\s)\s*\d{1,2}:\d{2}\s*(?:AM|PM)?\s*/i, '')
+        .replace(/^\d{1,2}:\d{2}\s*(?:AM|PM)?\s+/i, '');
+      return scheduleMetadata(line) ? '' : line;
+    }));
   }
 
   function parseText(text) {
@@ -293,8 +342,16 @@
     return new Set(reordered.filter(id => !unchanged.has(id)));
   }
 
-  function materialize(rows, days, startDate, starts, duration) {
-    parseDate(startDate);
+  function meetingDates(dates) {
+    if (!dates.length) fail('Choose at least one meeting date.');
+    const resolved = dates.map(date => parseDate(date));
+    if (resolved.some((date, i) => i && date <= resolved[i - 1])) fail('Meeting dates must be different and in chronological order.');
+    return resolved;
+  }
+
+  function materialize(rows, days, startDate, starts, duration, dates = days.map((_, i) => addDays(startDate, i))) {
+    const resolvedDates = meetingDates(dates);
+    if (resolvedDates.length !== days.length) fail('Choose a meeting date for every day.');
     if (!Number.isInteger(duration) || duration <= 0) fail('Slot duration must be a positive whole number of minutes.');
     const byId = new Map(rows.map(row => [row.id, row]));
     const all = days.flat();
@@ -306,25 +363,25 @@
       if (start + ids.length * duration > 1440) fail(`Day ${dayIndex + 1} extends past midnight. Start earlier, shorten slots, or move slots to another day.`);
       return ids.map((id, slotIndex) => {
         const source = byId.get(id), time = start + slotIndex * duration;
-        return { ...source, date: addDays(startDate, dayIndex), start: time, end: time + duration, dayIndex, changed: changed.has(id) };
+        return { ...source, date: resolvedDates[dayIndex], start: time, end: time + duration, dayIndex, changed: changed.has(id) };
       });
     });
   }
 
   const escapeHTML = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const csvCell = value => /[",\n\r\t]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
-  function exportCSV(days) {
-    return ['day,start_time,end_time,presenter', ...days.flat().map(row => [row.date, formatTime(row.start), formatTime(row.end), row.presenter].map(csvCell).join(','))].join('\r\n');
+  function exportCSV(days, format = '24') {
+    return ['day,start_time,end_time,presenter', ...days.flat().map(row => [row.date, formatTime(row.start, format), formatTime(row.end, format), row.presenter].map(csvCell).join(','))].join('\r\n');
   }
-  function exportTSV(days) {
-    return ['Day\tStart\tEnd\tPresenter', ...days.flat().map(row => [row.date, formatTime(row.start), formatTime(row.end), row.presenter].map(csvCell).join('\t'))].join('\n');
+  function exportTSV(days, format = '24') {
+    return ['Day\tStart\tEnd\tPresenter', ...days.flat().map(row => [row.date, formatTime(row.start, format), formatTime(row.end, format), row.presenter].map(csvCell).join('\t'))].join('\n');
   }
-  function exportText(days) {
-    return days.map((rows, i) => rows.length ? `DAY ${i + 1} (${formatDate(rows[0].date)})\n${rows.map(r => `${formatTime(r.start)}–${formatTime(r.end)} ${r.presenter}`).join('\n')}` : '').filter(Boolean).join('\n\n');
+  function exportText(days, format = '24') {
+    return days.map((rows, i) => rows.length ? `DAY ${i + 1} (${formatDate(rows[0].date)})\n${rows.map(r => `${formatTime(r.start, format)}–${formatTime(r.end, format)} ${r.presenter}`).join('\n')}` : '').filter(Boolean).join('\n\n');
   }
-  function exportHTML(days) {
+  function exportHTML(days, format = '24') {
     const style = 'border:1px solid #d5d9df;padding:10px 12px;text-align:left;background:#ffffff;font-weight:400;';
-    return `<table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:16px;color:#202b36;background:#ffffff;"><thead><tr>${['Day', 'Start', 'End', 'Presenter'].map(label => `<th style="${style}">${label}</th>`).join('')}</tr></thead><tbody>${days.flat().map(row => `<tr>${[formatDate(row.date), formatTime(row.start), formatTime(row.end), row.presenter].map(value => `<td style="${style}">${escapeHTML(value)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+    return `<table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:16px;color:#202b36;background:#ffffff;"><thead><tr>${['Day', 'Start', 'End', 'Presenter'].map(label => `<th style="${style}">${label}</th>`).join('')}</tr></thead><tbody>${days.flat().map(row => `<tr>${[formatDate(row.date), formatTime(row.start, format), formatTime(row.end, format), row.presenter].map(value => `<td style="${style}">${escapeHTML(value)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
   }
 
   function fuzzyMatch(query, text) {
@@ -345,5 +402,5 @@
     });
   }
 
-  return { COLORS, parseDate, addDays, formatDate, parseTime, formatTime, timeInput, parseDelimited, tableRecords, parseHTML, parseText, importDays, resolveRows, inferDuration, orderedBlocks, targetsFor, partition, generate, groupMap, expandSelection, moveSlots, materialize, changedOrderIds, escapeHTML, exportCSV, exportTSV, exportText, exportHTML, fuzzyMatch };
+  return { COLORS, parseDate, addDays, formatDate, parseTime, formatTime, timeInput, parseDelimited, tableRecords, parseHTML, parseText, parseParticipantText, parseParticipantHTML, importDays, resolveRows, inferDuration, orderedBlocks, targetsFor, partition, generate, groupMap, expandSelection, moveSlots, meetingDates, materialize, changedOrderIds, escapeHTML, exportCSV, exportTSV, exportText, exportHTML, fuzzyMatch };
 });

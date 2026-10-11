@@ -6,9 +6,9 @@
   const t = value => I18n.t(value);
   I18n.bindStatic();
   const uiDate = iso => new Intl.DateTimeFormat(I18n.language, { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${iso}T12:00:00Z`));
-  const uiTime = value => I18n.language === 'zh-CN' ? S.formatTime(value).replace(' AM', ' 上午').replace(' PM', ' 下午') : S.formatTime(value);
+  const uiTime = value => I18n.language === 'zh-CN' ? S.formatTime(value, I18n.timeFormat).replace(' AM', ' 上午').replace(' PM', ' 下午') : S.formatTime(value, I18n.timeFormat);
   function uiText(element, source) { element.dataset.uiSource = source; element.textContent = t(source); }
-  const state = { raw: [], draftDays: [], rows: [], groups: [], days: [], starts: [], selected: new Set(), dirty: false, output: null, clipboardHTML: '', editing: null, groupSelection: new Set(), nextGroup: 1, copyHTML: '', copyPlain: '', dragging: false, importTimer: null, importPending: false };
+  const state = { previewRows: [], rows: [], groups: [], days: [], dates: [], starts: [], datesEdited: new Set(), selected: new Set(), dirty: false, output: null, clipboardHTML: '', editing: null, nextGroup: 1, copyHTML: '', copyPlain: '', dragging: false, importTimer: null, importPending: false };
   function node(tag, className, text, literal = false) {
     const element = document.createElement(tag);
     if (className) element.className = className;
@@ -18,50 +18,78 @@
   function message(text) { uiText($('status'), text); }
   function error(id, text = '') { uiText($(id), text); $(id).hidden = !text; }
   const rowsById = () => new Map(state.rows.map(row => [row.id, row]));
-  const sourceDays = () => [...new Set(state.rows.map(row => row.date))].map(date => state.rows.filter(row => row.date === date));
   const groupFor = id => state.groups.find(group => group.members.includes(id));
   const dayCount = () => Number($('day-count').value);
 
   function showPage(page, navigate = true) {
-    const schedule = page === 'schedule' && state.rows.length > 0;
-    $('import-page').hidden = schedule;
-    $('workspace').hidden = !schedule;
-    $('nav-import').toggleAttribute('aria-current', !schedule);
-    $('nav-schedule').toggleAttribute('aria-current', schedule);
-    (schedule ? $('nav-schedule') : $('nav-import')).setAttribute('aria-current', 'step');
-    if (navigate && location.hash !== (schedule ? '#schedule' : '#import')) location.hash = schedule ? 'schedule' : 'import';
-    (schedule ? $('setup-heading') : $('import-heading')).focus({ preventScroll: true });
+    if (!['setup', 'import', 'schedule'].includes(page)) page = 'setup';
+    if (page === 'schedule' && (!state.rows.length || $('use-input').disabled)) page = 'import';
+    for (const [step, id] of [['setup', 'setup-page'], ['import', 'import-page'], ['schedule', 'workspace']]) {
+      $(id).hidden = step !== page;
+      $(`nav-${step}`).removeAttribute('aria-current');
+    }
+    $(`nav-${page}`).setAttribute('aria-current', 'step');
+    if (navigate && location.hash !== `#${page}`) location.hash = page;
+    $({ setup: 'setup-heading', import: 'import-heading', schedule: 'workspace-heading' }[page]).focus({ preventScroll: true });
     window.scrollTo({ top: 0, behavior: 'instant' });
   }
-  $('nav-import').addEventListener('click', () => showPage('import'));
+  $('nav-setup').addEventListener('click', () => showPage('setup'));
+  ['back-setup', 'edit-settings', 'edit-import-settings'].forEach(id => $(id).addEventListener('click', () => showPage('setup')));
+  function continueImport() { if (validateSetup()) showPage('import'); }
+  $('continue-import').addEventListener('click', continueImport);
+  $('nav-import').addEventListener('click', continueImport);
   $('back-input').addEventListener('click', () => showPage('import'));
   $('nav-schedule').addEventListener('click', acceptInput);
-  window.addEventListener('hashchange', () => showPage(location.hash === '#schedule' ? 'schedule' : 'import', false));
-  showPage('import', false);
+  window.addEventListener('hashchange', () => {
+    const page = location.hash.slice(1);
+    if (page === 'schedule') acceptInput();
+    else showPage(page, false);
+  });
+  const today = new Date();
+  $('start-date').value = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  configureDates(); configureStarts(); renderSettingsSummary();
+  showPage('setup', false);
 
   function queuePreview() {
     clearTimeout(state.importTimer);
     state.importPending = true;
     $('use-input').disabled = true;
+    $('nav-schedule').disabled = true;
     state.importTimer = setTimeout(previewInput, 250);
   }
 
   $('ui-language').addEventListener('change', () => {
     I18n.setLanguage($('ui-language').value);
     document.querySelectorAll('[data-ui-source]').forEach(el => { el.textContent = t(el.dataset.uiSource); });
-    if (!$('import-review').hidden && !state.importPending) { renderImportDays(); refreshImportPreview(); }
+    if (state.previewRows.length && !state.importPending) renderImportPreview();
+    try { configureDates(); configureStarts(); } catch (_) { /* Keep invalid input editable. */ }
+    renderSettingsSummary();
     if (state.rows.length) {
-      try { configureStarts(); } catch (_) { /* Keep invalid input editable. */ }
       renderGroups(); renderSchedules(); updateControls();
     }
-    if ($('group-dialog').open) renderGroupResults();
+    if ($('group-dialog').open) renderGroupPreview();
   });
   $('ui-theme').addEventListener('change', () => I18n.setTheme($('ui-theme').value));
+  $('ui-time-format').addEventListener('change', () => {
+    I18n.setTimeFormat($('ui-time-format').value);
+    try { configureStarts(); } catch (_) { /* Keep invalid settings editable. */ }
+    renderSettingsSummary();
+    if (state.rows.length) { renderSchedules(); updateControls(); }
+    if ($('group-dialog').open) renderGroupPreview();
+    if ($('copy-dialog').open && state.output) showCopyFallback(state.copyHTML ? S.exportHTML(state.output, I18n.timeFormat) : '', state.copyHTML ? S.exportTSV(state.output, I18n.timeFormat) : S.exportText(state.output, I18n.timeFormat));
+  });
 
   $('paste-input').addEventListener('paste', event => {
-    const html = event.clipboardData?.getData('text/html') || '';
     const text = event.clipboardData?.getData('text/plain') || '';
-    if (html && /<table[\s>]/i.test(html)) {
+    const html = event.clipboardData?.getData('text/html') || '';
+    if (text) {
+      event.preventDefault();
+      state.clipboardHTML = '';
+      const input = $('paste-input');
+      input.setRangeText(text, input.selectionStart, input.selectionEnd, 'end');
+      error('import-error');
+      previewInput();
+    } else if (html && /<table[\s>]/i.test(html)) {
       event.preventDefault();
       state.clipboardHTML = html;
       $('paste-input').value = text || 'Email table received.';
@@ -86,7 +114,7 @@
     state.clipboardHTML = '';
     uiText($('file-name'), 'Sample: 26 presenters, 2 days');
     previewInput();
-    message('Sample loaded. Review the preview, then continue to scheduling.');
+    message('Sample loaded. Review the participant order, then generate this week.');
   });
 
   function previewInput() {
@@ -94,58 +122,27 @@
     try {
       error('import-error');
       const value = $('paste-input').value;
-      const raw = state.clipboardHTML ? S.parseHTML(state.clipboardHTML) : /^\s*<table[\s>]/i.test(value) ? S.parseHTML(value) : S.parseText(value);
-      const days = S.importDays(raw).map(day => ({ ...day, ...state.draftDays.find(previous => previous.label === day.label) }));
-      state.raw = raw; state.draftDays = days;
-      renderImportDays();
-      $('import-review').hidden = false;
-      refreshImportPreview();
+      const names = state.clipboardHTML ? S.parseParticipantHTML(state.clipboardHTML) : /^\s*<table[\s>]/i.test(value) ? S.parseParticipantHTML(value) : S.parseParticipantText(value);
+      state.previewRows = names.map((presenter, originalIndex) => ({ id: `slot-${originalIndex + 1}`, presenter, originalIndex, dayIndex: 0 }));
+      $('use-input').disabled = false;
+      $('nav-schedule').disabled = !state.rows.length;
+      renderImportPreview();
     } catch (e) {
-      $('import-review').hidden = true; $('use-input').disabled = true;
+      state.previewRows = [];
+      $('use-input').disabled = true; $('nav-schedule').disabled = true;
       uiText($('preview-count'), 'No valid slots');
       $('import-preview').replaceChildren(node('p', 'preview-placeholder', 'Enter a valid schedule to see the preview.'));
       error('import-error', e.message);
     }
   }
 
-  function renderImportDays() {
-    $('import-days').replaceChildren(...state.draftDays.map((day, index) => {
-      const wrapper = node('div', 'input-day');
-      wrapper.append(node('strong', '', `Day ${index + 1} · ${day.label}`));
-      const label = node('label', '', 'Input date');
-      const input = node('input'); input.type = 'date'; input.value = day.date;
-      input.setAttribute('aria-label', t(`Input date for day ${index + 1}`));
-      input.addEventListener('change', () => { day.date = input.value; refreshImportPreview(); });
-      label.append(input); wrapper.append(label);
-      if (day.ambiguous) {
-        const periodLabel = node('label', '', 'Unmarked times begin in');
-        const select = node('select'); select.setAttribute('aria-label', t(`Time interpretation for day ${index + 1}`));
-        [['AM', 'AM · morning'], ['PM', 'PM · afternoon'], ['24', '24-hour clock']].forEach(([value, text]) => { const option = node('option', '', text); option.value = value; select.append(option); });
-        select.value = day.period;
-        select.addEventListener('change', () => { day.period = select.value; refreshImportPreview(); });
-        periodLabel.append(select); wrapper.append(periodLabel);
-      }
-      return wrapper;
-    }));
-  }
-
-  function refreshImportPreview() {
-    try {
-      const rows = S.resolveRows(state.raw, state.draftDays);
-      error('import-error');
-      $('use-input').disabled = false;
-      uiText($('preview-count'), `${rows.length} slots`);
-      const table = node('table');
-      const head = node('thead'), heading = node('tr');
-      ['Day', 'Start', 'End', 'Presenter'].forEach(text => heading.append(node('th', '', text))); head.append(heading); table.append(head);
-      const body = node('tbody');
-      rows.forEach(row => { const tr = node('tr'); [uiDate(row.date), uiTime(row.start), uiTime(row.end), row.presenter].forEach((text, index) => tr.append(node('td', '', text, index === 3))); body.append(tr); });
-      table.append(body); $('import-preview').replaceChildren(table);
-    } catch (e) {
-      error('import-error', e.message); $('use-input').disabled = true;
-      uiText($('preview-count'), 'Check input');
-      $('import-preview').replaceChildren(node('p', 'helper', 'Correct the dates or time interpretation above to preview this schedule.'));
-    }
+  function renderImportPreview() {
+    uiText($('preview-count'), `${state.previewRows.length} slots`);
+    const table = node('table'), head = node('thead'), heading = node('tr');
+    ['Order', 'Participant'].forEach(text => heading.append(node('th', '', text))); head.append(heading); table.append(head);
+    const body = node('tbody');
+    state.previewRows.forEach((row, index) => { const tr = node('tr'); tr.append(node('td', '', String(index + 1)), node('td', '', row.presenter, true)); body.append(tr); });
+    table.append(body); $('import-preview').replaceChildren(table);
   }
 
   $('use-input').addEventListener('click', acceptInput);
@@ -153,49 +150,112 @@
     try {
       if (state.importPending) previewInput();
       if ($('use-input').disabled) { showPage('import'); return; }
-      const rows = S.resolveRows(state.raw, state.draftDays);
-      if (JSON.stringify(rows) === JSON.stringify(state.rows)) { showPage('schedule'); return; }
-      state.rows = rows; state.groups = []; state.nextGroup = 1; state.selected.clear(); state.days = []; state.starts = [];
-      $('start-date').value = S.addDays(rows[0].date, 7);
-      $('day-count').value = sourceDays().length;
-      $('duration').value = S.inferDuration(rows);
+      if (!validateSetup()) { showPage('setup'); return; }
+      error('import-error');
+      const rows = state.previewRows;
+      if (JSON.stringify(rows) === JSON.stringify(state.rows)) {
+        updateSchedule();
+        if (!state.output) { error('import-error', $('schedule-error').dataset.uiSource); showPage('import'); return; }
+        showPage('schedule'); return;
+      }
+      state.rows = rows; state.groups = []; state.nextGroup = 1; state.selected.clear(); state.days = [];
       $('nav-schedule').disabled = false;
-      uiText($('input-summary'), `${rows.length} slots · ${sourceDays().length} input days`);
-      configureStarts(); renderGroups(); regenerate();
-      message(`Imported ${rows.length} slots. Next week’s schedule is ready to adjust.`);
+      uiText($('input-summary'), `${rows.length} participants in last week’s order`);
+      renderGroups();
+      if (!regenerate()) { error('import-error', $('schedule-error').dataset.uiSource); showPage('import'); return; }
+      message(`Imported ${rows.length} slots. This week’s schedule is ready to adjust.`);
       showPage('schedule');
     } catch (e) { error('import-error', e.message); }
   }
 
+  function configureDates() {
+    const count = dayCount(); S.targetsFor([], count);
+    state.dates[0] = $('start-date').value;
+    for (let i = 1; i < count; i++) if (state.dates[i] === undefined) state.dates[i] = S.addDays(state.dates[i - 1], 1);
+    $('meeting-dates').replaceChildren(...Array.from({ length: count - 1 }, (_, offset) => {
+      const index = offset + 1, label = node('label', '', `Day ${index + 1} date`);
+      const input = node('input'); input.type = 'date'; input.value = state.dates[index]; input.required = true;
+      input.setAttribute('aria-label', t(`Meeting date for day ${index + 1}`));
+      input.addEventListener('change', () => { state.dates[index] = input.value; state.datesEdited.add(index); settingsChanged(); });
+      label.append(input); return label;
+    }));
+  }
+
   function configureStarts() {
-    const count = dayCount(); S.targetsFor(state.rows, count);
-    const original = sourceDays();
-    for (let i = 0; i < count; i++) if (state.starts[i] === undefined) state.starts[i] = original[i]?.[0]?.start ?? original[0][0].start;
+    const count = dayCount(); S.targetsFor([], count);
+    for (let i = 0; i < count; i++) if (state.starts[i] === undefined) state.starts[i] = 540;
     $('daily-starts').replaceChildren(...Array.from({ length: count }, (_, index) => {
       const label = node('label', '', `Day ${index + 1} starts`);
-      const input = node('input'); input.type = 'time'; input.value = S.timeInput(state.starts[index]); input.required = true;
+      const input = node('input'); input.type = 'text'; input.value = Number.isInteger(state.starts[index]) ? S.formatTime(state.starts[index], I18n.timeFormat) : ''; input.required = true;
+      input.placeholder = I18n.timeFormat === '12' ? 'h:mm AM/PM' : 'HH:MM'; input.autocomplete = 'off'; input.spellcheck = false;
       input.setAttribute('aria-label', t(`Start time for day ${index + 1}`));
       input.addEventListener('change', () => {
-        try { state.starts[index] = S.parseTime(input.value, '24'); updateSchedule(); }
-        catch (e) { state.starts[index] = NaN; invalidateOutput(e.message); }
+        try {
+          if (I18n.timeFormat === '12' && !/[AP]M$/i.test(input.value.trim())) throw new Error('Include AM or PM.');
+          state.starts[index] = S.parseTime(input.value, '24');
+          input.value = S.formatTime(state.starts[index], I18n.timeFormat);
+        }
+        catch (_) { state.starts[index] = NaN; }
+        settingsChanged();
       });
       label.append(input); return label;
     }));
   }
 
   $('day-count').addEventListener('input', () => {
-    regenerate();
+    try { configureDates(); configureStarts(); } catch (_) { /* Validation keeps the number editable. */ }
+    settingsChanged(true);
   });
-  $('start-date').addEventListener('change', updateSchedule);
-  $('duration').addEventListener('input', updateSchedule);
+  $('start-date').addEventListener('change', () => {
+    state.dates[0] = $('start-date').value;
+    try {
+      for (let i = 1; i < dayCount(); i++) if (!state.datesEdited.has(i)) state.dates[i] = S.addDays(state.dates[i - 1], 1);
+      configureDates();
+    } catch (_) { /* Validation keeps the date editable. */ }
+    settingsChanged();
+  });
+  $('duration').addEventListener('input', () => settingsChanged());
   $('reset-schedule').addEventListener('click', () => { if (regenerate()) message('Schedule reset to the automatic order. Settings and groups kept.'); });
+
+  function validateSetup() {
+    try {
+      const count = dayCount(); S.targetsFor([], count);
+      S.meetingDates(state.dates.slice(0, count));
+      const duration = Number($('duration').value);
+      if (!Number.isInteger(duration) || duration <= 0) throw new Error('Slot duration must be a positive whole number of minutes.');
+      for (let i = 0; i < count; i++) if (!Number.isInteger(state.starts[i]) || state.starts[i] < 0 || state.starts[i] >= 1440) throw new Error(`Day ${i + 1}: choose a valid start time.`);
+      error('setup-error'); return true;
+    } catch (e) { error('setup-error', e.message); return false; }
+  }
+
+  function renderSettingsSummary() {
+    let text = 'Check days and times in step 1.';
+    try {
+      const count = dayCount(); S.targetsFor([], count);
+      const dates = S.meetingDates(state.dates.slice(0, count));
+      text = `${dates.map((date, i) => `${uiDate(date)} · ${uiTime(state.starts[i])}`).join(' / ')} · ${t(`${$('duration').value} minutes per slot`)}`;
+    } catch (_) { /* Use the editable-settings hint. */ }
+    ['import-settings-summary', 'workspace-settings-summary'].forEach(id => uiText($(id), text));
+  }
+
+  function settingsChanged(rebalance = false) {
+    renderSettingsSummary();
+    if (!validateSetup()) {
+      if (rebalance) state.dirty = true;
+      if (state.rows.length) invalidateOutput($('setup-error').dataset.uiSource);
+      return;
+    }
+    if (state.rows.length) { if (rebalance) regenerate(); else updateSchedule(); }
+  }
+
+  const materialize = days => S.materialize(state.rows, days, $('start-date').value, state.starts, Number($('duration').value), state.dates.slice(0, dayCount()));
 
   function regenerate() {
     state.dirty = true;
     try {
       configureStarts();
       const days = S.generate(state.rows, state.groups, dayCount());
-      const output = S.materialize(state.rows, days, $('start-date').value, state.starts, Number($('duration').value));
+      const output = materialize(days);
       state.days = days; state.output = output; state.dirty = false; state.selected.clear();
       error('schedule-error');
       renderSchedules(); updateControls();
@@ -214,7 +274,7 @@
     if (!state.rows.length) return;
     if (state.dirty) { regenerate(); return; }
     try {
-      const output = S.materialize(state.rows, state.days, $('start-date').value, state.starts, Number($('duration').value));
+      const output = materialize(state.days);
       state.output = output;
       error('schedule-error'); renderSchedules(); updateControls();
     } catch (e) { invalidateOutput(e.message); }
@@ -228,63 +288,80 @@
     }) : [node('span', 'helper', 'No groups yet — everyone follows the rotation.')]));
   }
 
-  function openGroup(id = null) {
+  function openGroup(id) {
     state.editing = id;
     const group = state.groups.find(g => g.id === id);
-    state.groupSelection = new Set(group?.members || []);
-    $('group-name').value = group?.name || t(`Group ${state.nextGroup}`);
-    $('group-search').value = '';
-    uiText($('group-dialog-title'), group ? 'Edit your group' : 'Create a group');
-    $('delete-group').hidden = !group; error('group-error');
-    renderGroupResults(); $('group-dialog').showModal(); $('group-search').focus();
+    if (!group) return;
+    $('group-name').value = group.name;
+    error('group-error');
+    renderGroupPreview(); $('group-dialog').showModal(); $('group-name').focus(); $('group-name').select();
   }
-  $('add-group').addEventListener('click', () => openGroup());
+  $('add-group').addEventListener('click', () => {
+    if (!state.output || state.dirty || state.selected.size < 2) return;
+    try {
+      const selected = S.expandSelection(state.selected, state.groups);
+      const members = state.days.flat().filter(id => selected.has(id));
+      const existing = state.groups.filter(group => group.members.some(id => selected.has(id)));
+      if (existing.length === 1 && existing[0].members.length === members.length) { openGroup(existing[0].id); return; }
+      const index = state.nextGroup - 1;
+      const color = S.COLORS[index] || `hsl(${Math.round(index * 137.508) % 360} 55% 89%)`;
+      const group = { id: `group-${state.nextGroup}`, name: t(`Group ${state.nextGroup}`), color, members };
+      const groups = state.groups.filter(group => !existing.includes(group)).concat(group);
+      const targetDay = state.days.findIndex(day => day.includes(members[0]));
+      const first = state.days[targetDay].indexOf(members[0]);
+      const before = state.days[targetDay].slice(first).find(id => !selected.has(id)) || null;
+      const days = S.moveSlots(state.days, selected, targetDay, before, groups);
+      const output = materialize(days);
+      state.groups = groups; state.nextGroup++; state.days = days; state.output = output; state.selected.clear();
+      error('schedule-error'); renderGroups(); renderSchedules(); updateControls();
+      message('Group created. You can edit its name.');
+      openGroup(group.id);
+    } catch (e) { error('schedule-error', e.message); message('Group was not created. Your previous schedule is unchanged.'); }
+  });
   $('close-group').addEventListener('click', () => $('group-dialog').close());
-  $('group-search').addEventListener('input', renderGroupResults);
 
-  function renderGroupResults() {
-    const matches = state.rows.filter(row => S.fuzzyMatch($('group-search').value, row.presenter));
-    const entries = matches.map(row => {
-      const group = groupFor(row.id), unavailable = group && group.id !== state.editing;
-      const label = node('label', `group-result${unavailable ? ' unavailable' : ''}`);
-      const checkbox = node('input'); checkbox.type = 'checkbox'; checkbox.checked = state.groupSelection.has(row.id); checkbox.disabled = Boolean(unavailable);
-      checkbox.setAttribute('aria-label', t(`${row.presenter}, day ${row.dayIndex + 1}, ${uiTime(row.start)}`));
-      checkbox.addEventListener('change', () => {
-        if (checkbox.checked) state.groupSelection.add(row.id); else state.groupSelection.delete(row.id);
-        uiText($('group-selected-count'), `${state.groupSelection.size} slots selected`);
-      });
-      const content = node('span', '', row.presenter, true);
-      content.append(node('small', '', `${t(`Day ${row.dayIndex + 1}`)} · ${uiTime(row.start)}${unavailable ? ` · ${t(`In ${group.name}`)}` : ''}`));
-      label.append(checkbox, content); return label;
-    });
-    $('group-results').replaceChildren(...(entries.length ? entries : [node('p', 'helper', 'No matching presenters. Try a shorter name.')]));
-    uiText($('group-selected-count'), `${state.groupSelection.size} slots selected`);
+  function renderGroupPreview() {
+    const group = state.groups.find(group => group.id === state.editing);
+    const members = (state.output || []).flat().filter(row => group?.members.includes(row.id));
+    $('group-preview').replaceChildren(...members.map(row => {
+      const item = node('li', 'group-member', row.presenter, true);
+      item.append(node('small', '', `${t(`Day ${row.dayIndex + 1}`)} · ${uiTime(row.start)}`));
+      return item;
+    }));
+    uiText($('group-member-count'), `${members.length} slots`);
   }
 
   $('group-form').addEventListener('submit', event => {
     event.preventDefault();
-    if (state.groupSelection.size < 2) { error('group-error', 'Select at least two slots for a back-to-back group.'); return; }
     const name = $('group-name').value.trim();
     if (!name) { error('group-error', 'Give this group a name.'); return; }
     const existing = state.groups.find(group => group.id === state.editing);
-    if (existing) { existing.name = name; existing.members = [...state.groupSelection]; }
-    else {
-      const index = state.nextGroup++ - 1;
-      const color = S.COLORS[index] || `hsl(${Math.round(index * 137.508) % 360} 55% 89%)`;
-      state.groups.push({ id: `group-${index + 1}`, name, color, members: [...state.groupSelection] });
-    }
-    $('group-dialog').close(); renderGroups(); regenerate();
+    if (!existing) return;
+    existing.name = name;
+    $('group-dialog').close(); renderGroups(); renderSchedules(); updateControls();
+    message('Group name updated.');
   });
   $('delete-group').addEventListener('click', () => {
     state.groups = state.groups.filter(group => group.id !== state.editing);
-    $('group-dialog').close(); renderGroups(); regenerate();
+    $('group-dialog').close(); renderGroups(); renderSchedules(); updateControls();
   });
+
+  function renderSourceOrder() {
+    $('source-schedule').replaceChildren(...state.rows.map((row, index) => {
+      const slot = node('div', 'slot source-slot'); slot.dataset.slotId = row.id;
+      const group = groupFor(row.id);
+      if (group) slot.style.setProperty('--group-color', group.color);
+      const name = node('span', 'slot-name', row.presenter, true);
+      if (group) name.append(node('small', '', group.name, true));
+      slot.append(node('span', 'slot-order', String(index + 1)), name);
+      return slot;
+    }));
+  }
 
   function renderSchedules() {
     if (!state.rows.length) return;
     const outputById = new Map((state.output || []).flat().map(row => [row.id, row]));
-    const source = sourceDays();
-    renderPanel('source-schedule', source, false, outputById);
+    renderSourceOrder();
     if (state.output) renderPanel('output-schedule', state.output, true, outputById);
     else $('output-schedule').replaceChildren(node('p', 'error', 'Fix the schedule settings above to preview and export the output.'));
     uiText($('source-count'), `${state.rows.length} slots`);
@@ -300,7 +377,7 @@
     const fragment = document.createDocumentFragment();
     days.forEach((rows, index) => {
       const section = node('section', 'schedule-day');
-      const date = rows[0]?.date || S.addDays($('start-date').value, index);
+      const date = rows[0]?.date || state.dates[index];
       const heading = node('div', 'day-heading');
       heading.append(node('strong', '', `DAY ${index + 1}  ·  ${uiDate(date)}`), node('span', '', `${rows.length} slots`)); section.append(heading);
       rows.forEach(row => {
@@ -370,7 +447,7 @@
   function performMove(index, before) {
     try {
       const days = S.moveSlots(state.days, state.selected, index, before, state.groups);
-      const output = S.materialize(state.rows, days, $('start-date').value, state.starts, Number($('duration').value));
+      const output = materialize(days);
       const count = state.selected.size;
       state.days = days; state.output = output; state.selected.clear();
       error('schedule-error'); renderSchedules(); updateControls();
@@ -383,6 +460,7 @@
     ['copy-table', 'copy-text', 'download-csv'].forEach(id => $(id).disabled = !enabled);
     uiText($('selection-count'), `${state.selected.size} slots selected`);
     $('move-selected').disabled = !enabled || !state.selected.size;
+    $('add-group').disabled = !enabled || state.selected.size < 2;
     $('clear-selection').disabled = !state.selected.size;
     const previous = $('move-day').value;
     $('move-day').replaceChildren(...state.days.map((_, index) => { const option = node('option', '', `Day ${index + 1}`); option.value = index; return option; }));
@@ -416,7 +494,7 @@
     else $('copy-preview').replaceChildren(node('pre', '', plain));
     uiText($('copy-instructions'), html ? 'Select the table below, press ⌘C or Ctrl+C, then paste into Outlook using “Keep Source Formatting”.' : 'Select the text below, press ⌘C or Ctrl+C, then paste into your email.');
     uiText($('select-copy'), html ? 'Select table' : 'Select text');
-    $('copy-dialog').showModal(); selectCopy();
+    if (!$('copy-dialog').open) $('copy-dialog').showModal(); selectCopy();
   }
 
   async function copySchedule(html, plain) {
@@ -432,11 +510,11 @@
     } catch (_) { showCopyFallback(html, plain); message('Use the selected preview to copy your schedule manually.'); }
   }
 
-  $('copy-table').addEventListener('click', () => { if (state.output && !state.dirty) copySchedule(S.exportHTML(state.output, state.groups), S.exportTSV(state.output)); });
-  $('copy-text').addEventListener('click', () => { if (state.output && !state.dirty) copySchedule('', S.exportText(state.output)); });
+  $('copy-table').addEventListener('click', () => { if (state.output && !state.dirty) copySchedule(S.exportHTML(state.output, I18n.timeFormat), S.exportTSV(state.output, I18n.timeFormat)); });
+  $('copy-text').addEventListener('click', () => { if (state.output && !state.dirty) copySchedule('', S.exportText(state.output, I18n.timeFormat)); });
   $('download-csv').addEventListener('click', () => {
     if (!state.output || state.dirty) return;
-    const url = URL.createObjectURL(new Blob(['\uFEFF', S.exportCSV(state.output)], { type: 'text/csv;charset=utf-8' }));
+    const url = URL.createObjectURL(new Blob(['\uFEFF', S.exportCSV(state.output, I18n.timeFormat)], { type: 'text/csv;charset=utf-8' }));
     const anchor = node('a'); anchor.href = url; anchor.download = `schedule-${$('start-date').value}.csv`;
     document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     message('CSV downloaded.');

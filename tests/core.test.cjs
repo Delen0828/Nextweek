@@ -12,6 +12,35 @@ const sample = resolve(sampleCSV);
 const simple = n => Array.from({ length: n }, (_, i) => ({ id: String(i), presenter: `Person ${i}`, date: '2026-09-28', start: 540 + i * 10, end: 550 + i * 10, dayIndex: 0, originalIndex: i }));
 const group = (members, id = 'g') => ({ id, name: id, members, color: S.COLORS[0] });
 
+test('24-hour formatting is the default; both clocks handle noon and midnight', () => {
+  assert.deepEqual([0, 65, 720, 960, 1439, 1440].map(time => S.formatTime(time)), ['00:00', '01:05', '12:00', '16:00', '23:59', '00:00']);
+  assert.deepEqual([0, 65, 720, 960, 1439, 1440].map(time => S.formatTime(time, '12')), ['12:00 AM', '1:05 AM', '12:00 PM', '4:00 PM', '11:59 PM', '12:00 AM']);
+  const rows = [[{ ...simple(1)[0], start: 960, end: 970 }]];
+  for (const encode of [S.exportCSV, S.exportTSV, S.exportText, S.exportHTML]) {
+    assert.ok(encode(rows).includes('16:00'));
+    assert.ok(!encode(rows).includes('4:00 PM'));
+    assert.ok(encode(rows, '12').includes('4:00 PM'));
+  }
+  const midnight = [[{ ...simple(1)[0], start: 1430, end: 1440 }]];
+  assert.ok(S.exportText(midnight).includes('23:50–00:00'));
+  assert.ok(S.exportText(midnight, '12').includes('11:50 PM–12:00 AM'));
+});
+
+test('participant import only needs order, ignoring invalid and missing schedule metadata', () => {
+  assert.deepEqual(S.parseParticipantText('day,start_time,end_time,presenter\nnot a date,bad,earlier,Alice\n2026-99-99,25:00,,Bob'), ['Alice', 'Bob']);
+  assert.deepEqual(S.parseParticipantText('1. Alice\n2) Bob\n• Carol\nAlice'), ['Alice', 'Bob', 'Carol', 'Alice']);
+  assert.deepEqual(S.parseParticipantText('Lee, Jimin\nPatel, Jordan'), ['Lee, Jimin', 'Patel, Jordan']);
+  assert.deepEqual(S.parseParticipantText('DAY 1 (invalid old date)\n4:00–4:10 Alice\n4:10–4:20 Bob\n\nDAY 2 (no date)\n9:00 AM–9:10 AM Carol'), ['Alice', 'Bob', 'Carol']);
+  assert.deepEqual(S.parseParticipantText('Presenter\nAlice\nBob'), ['Alice', 'Bob']);
+  assert.deepEqual(S.parseParticipantText('Name\tTime\nAlice\tnonsense\nBob\t25:90'), ['Alice', 'Bob']);
+  assert.deepEqual(S.parseParticipantText('broken,time,end,Alice\nalso broken,?,,Bob'), ['Alice', 'Bob']);
+  assert.deepEqual(S.parseParticipantText('day,start,end,presenter\nbad,?,,"Alice'), ['Alice']);
+  assert.deepEqual(S.parseParticipantText('Sep 99 4:00 PM 4:10 PM Alice\n4:10 PM–4:20 PM Bob'), ['Alice', 'Bob']);
+  assert.deepEqual(S.parseParticipantText('Presenter name,Time\nAlice,bad\nBob,invalid'), ['Alice', 'Bob']);
+  assert.throws(() => S.parseParticipantText(''), /Paste participant/);
+  assert.throws(() => S.parseParticipantText(Array(501).fill('Alice').join('\n')), /500/);
+});
+
 test('embedded sample and DAY text parse with intended AM/PM', () => {
   const text = 'DAY 1 (Sep 28)\n4:00–4:10 Alice\n4:10–4:20 Bob\n\nDAY 2 (Sep 29)\n9:00–9:10 Carol';
   assert.deepEqual(resolve(text).map(({ presenter, start, end }) => ({ presenter, start, end })), [
@@ -171,6 +200,16 @@ test('dates, time edits, and day-boundary changes alone never mark names changed
   const rows = simple(6);
   const output = S.materialize(rows, [['0'], ['1', '2', '3', '4', '5']], '2027-01-01', [960, 720], 25);
   assert.ok(output.flat().every(row => !row.changed));
+});
+
+test('selected meeting dates preserve gaps, including empty days, and survive export', () => {
+  const rows = simple(2), dates = ['2026-10-05', '2026-10-07', '2026-10-12'];
+  const output = S.materialize(rows, [['0'], [], ['1']], dates[0], [540, 600, 660], 10, dates);
+  assert.deepEqual(output.flat().map(row => row.date), [dates[0], dates[2]]);
+  assert.deepEqual(resolve(S.exportCSV(output)).map(row => row.date), [dates[0], dates[2]]);
+  assert.throws(() => S.materialize(rows, [['0'], ['1']], dates[0], [540, 600], 10, [dates[0], dates[0]]), /chronological/);
+  assert.throws(() => S.materialize(rows, [['0'], ['1']], dates[0], [540, 600], 10, [dates[1], dates[0]]), /chronological/);
+  assert.throws(() => S.materialize(rows, [['0'], ['1']], dates[0], [540, 600], 10, [dates[0]]), /every day/);
 });
 
 test('name search supports partial names, spelling mistakes, case, and joint names', () => {
